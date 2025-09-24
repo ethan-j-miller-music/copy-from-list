@@ -6,7 +6,7 @@
 
 ## 0) 这个脚本解决了什么问题？
 
-你手里只有一份 **Windows `tree /F` 的文本输出**（形如“│、├─、└─”的目录树），但只想把其中**指定后缀**的文件（默认 `pdf`）从**某个源根目录**复制到**目标根目录**，并且**保留原有的多级目录结构**。
+你手里只有一份 **Windows `tree /F` 的文本输出**（形如“│、├─、└─”的目录树）**或“一行一个绝对路径”的文件清单**，但只想把其中**指定后缀**的文件（默认 `pdf`）从**某个源根目录**复制到**目标根目录**，并且**保留原有的多级目录结构**。
 
 过去常见的做法是把这类“树形文本”**先解析回路径**，这一步很容易踩坑（混合缩进、BOM、编码、重复项、空目录等）。这个脚本做的就是**稳妥解析 + 安全复制**。
 
@@ -35,11 +35,14 @@
    python copy_from_list.py "G:\源根\PDF" "E:\目标根" move_list.txt --ext pdf --ext docx --ext xlsx
    ```
 
+> 如果你直接拥有**绝对路径清单**（例如 `dir /s /b *.pdf > list.txt` 的输出），同样使用以上命令即可。
+> 脚本会自动识别清单格式，绝对路径会在复制前被转换成相对 `source_root` 的层级。
+
 > **参数说明**
 >
 > * `source_root`：当时 `tree /F` 的那个目录（脚本按它来还原相对路径）
 > * `target_root`：复制到哪里
-> * `list_file`：`tree /F` 的文本输出文件（如：`move_list.txt`）
+> * `list_file`：清单文件（`tree /F` 文本或绝对路径列表，如：`move_list.txt`）
 > * `--ext`：允许多次指定（不带点），默认 `pdf`
 > * `--dry-run`：演练模式，只打印将要执行的复制
 
@@ -138,7 +141,8 @@ python copy_from_list.py "G:\SrcRoot" "E:\DstRoot" move_list.txt --ext pdf --dry
 ## 5) 常见问题（FAQ）
 
 **Q1：清单不是 `tree /F` 的格式可以吗？**
-A：不推荐。目录行的正则是按 `tree /F` 设计的。如果你能控制清单的生成，**更推荐直接用绝对路径列表**（见 §6）。
+A：可以。从 v2 起脚本会自动识别“`tree /F` 文本”和“绝对路径列表”两种清单。
+   只要绝对路径都位于 `source_root` 之下，就能正常复制；不在源根内的条目会被跳过并在日志中提示。
 
 **Q2：为什么不用“缩进估层级 + 文件行”一起算？**
 A：`tree` 的缩进在某些分支会用空格“占位”，**文件行**的缩进**不稳定**。我们只在**目录行**估层级，文件行**跟随当前目录栈**，才稳定。
@@ -162,15 +166,12 @@ rem 在源根目录下
 dir /s /b *.pdf > list.txt
 ```
 
-此时复制逻辑可以非常简单（伪码）：
+> **直接使用脚本即可**：`python copy_from_list.py "G:\源根" "E:\目标根" list.txt --ext pdf`
+>
+> * 脚本会检测到清单为“绝对路径模式”，并把每一行折算成相对 `source_root` 的路径后再执行复制。
+> * 如果清单包含不在 `source_root` 下的路径，终端会打印 `[SKIP]` 提示。
 
-```python
-for abs_path in lines:
-    dst = target_root / relative_strategy(abs_path)  # 保留结构/平铺都行
-    copy2(abs_path, dst)
-```
-
-> 提示：也可以结合 **Robocopy** 的“按清单分组到父目录再复制”的套路来获得更高速度与稳定性。
+相比 `tree /F`，绝对路径清单没有“缩进歧义”，更适合脚本化生成（如 `dir /s /b`、PowerShell、数据库导出等）。
 
 ---
 
@@ -206,7 +207,21 @@ for abs_path in lines:
 
 ---
 
-## 10) 设计决策备忘（写给未来的自己）
+## 10) 附录：本仓库的测试工作区
+
+为了便于新同学快速体验脚本行为，仓库新增了 `test_workspace/`：
+
+* `source/`：预置的示例目录树，可随意增删文件模拟真实场景。
+* `manifests/tree_manifest.txt`：Windows `tree /F` 的示例输出，与示例目录保持同步。
+* `manifests/absolute_manifest.template.txt`：绝对路径清单模板，使用占位符 `{repo_root}`。
+* `scripts/prepare_absolute_manifest.py`：将模板渲染为当前环境可直接使用的绝对路径清单。
+* `EXECUTION_FLOW.md`：一步步指导如何演练 dry-run、实际复制，以及如何维护示例清单。
+
+完整操作流程见 `test_workspace/EXECUTION_FLOW.md`，按照文档执行即可覆盖两种清单格式的测试。
+
+---
+
+## 11) 设计决策备忘（写给未来的自己）
 
 * **不要**用文件行的缩进去推断层级 —— 只信“目录行 → 更新路径栈”。
 * 为了健壮性，`depth_of` 采用“`│` + 空格”合并计数，“每 2 个字符 ≈ 一层” 的**宽松估计**即可。
@@ -216,7 +231,7 @@ for abs_path in lines:
 
 ---
 
-## 11) 附：核心正则与示例匹配
+## 12) 附：核心正则与示例匹配
 
 * 目录行（示例）
 
@@ -242,7 +257,7 @@ for abs_path in lines:
 
 ---
 
-## 12) 许可与环境
+## 13) 许可与环境
 
 * Python 3.8+（建议 3.10+）
 * 主要面向 Windows（清单是 `tree /F`），但脚本本身跨平台；若清单改为“绝对路径列表”，Linux/macOS 同理可用。
@@ -269,3 +284,5 @@ for abs_path in lines:
 ---
 
 
+
+<!-- Placeholder for future updates -->
