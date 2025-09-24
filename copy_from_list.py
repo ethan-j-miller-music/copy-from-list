@@ -5,6 +5,10 @@ import shutil
 import argparse
 from pathlib import Path
 
+
+ABS_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\|//|/).+')
+ROOT_LINE_RE = re.compile(r'^[A-Za-z]:\.$')
+
 def compile_file_regex(exts):
     # exts: {"pdf", "docx"} -> .(pdf|docx)$  忽略大小写
     ex_pat = "|".join(sorted(re.escape(e.lstrip(".").lower()) for e in exts))
@@ -29,26 +33,49 @@ def depth_of(indent: str) -> int:
     s = indent.replace("\t", "    ")
     return max(0, len(s) // 2)
 
-def parse_tree_file(tree_file: Path, file_re):
+def load_manifest_lines(tree_file: Path) -> list[str]:
+    """读取清单文本，做了常见编码的容错。"""
+    tried_encodings = ("utf-8-sig", "utf-8", os.device_encoding(1) or "mbcs")
+    last_err = None
+    for enc in tried_encodings:
+        try:
+            with tree_file.open(encoding=enc, errors="strict") as f:
+                return f.readlines()
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"无法解码清单文件：{tree_file}，最后错误：{last_err}")
+
+
+def detect_manifest_format(lines: list[str]) -> str:
+    """根据内容推断清单类型：tree /F 输出 或 绝对路径列表。"""
+    tree_signals = 0
+    absolute_signals = 0
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        if "├" in raw or "└" in raw or stripped.startswith("│"):
+            return "tree"
+        if ROOT_LINE_RE.match(stripped):
+            tree_signals += 1
+            continue
+        if ABS_PATH_RE.match(stripped):
+            absolute_signals += 1
+
+    if absolute_signals and not tree_signals:
+        return "absolute"
+    return "tree"
+
+
+def parse_tree_lines(lines: list[str], file_re):
     """
     从 tree /F 的文本输出中解析出【带层级的相对文件路径】。
     关键修复：文件行不再用缩进算层级，而是直接挂到当前目录栈 stack 的最深层。
     """
     files = []
     stack: list[str] = []  # 路径栈，stack[depth] = 该层的目录名
-
-    # 为了兼容 BOM 和本地编码，这里做个小策略
-    tried_encodings = ("utf-8-sig", "utf-8", os.device_encoding(1) or "mbcs")
-    last_err = None
-    for enc in tried_encodings:
-        try:
-            with tree_file.open(encoding=enc, errors="strict") as f:
-                lines = f.readlines()
-            break
-        except Exception as e:
-            last_err = e
-    else:
-        raise RuntimeError(f"无法解码清单文件：{tree_file}，最后错误：{last_err}")
 
     for raw in lines:
         s = raw.rstrip("\r\n")
@@ -78,6 +105,39 @@ def parse_tree_file(tree_file: Path, file_re):
         # 其他无关行忽略（如最顶上的盘符标题、统计行等）
 
     return files
+
+
+def parse_absolute_lines(lines: list[str], exts: set[str], src_root: Path):
+    """从绝对路径清单中解析相对路径。"""
+    files = []
+    allowed_exts = {e.lstrip(".").lower() for e in exts}
+    src_root_resolved = src_root.resolve(strict=False)
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        cleaned = stripped.strip('"')
+        if not ABS_PATH_RE.match(cleaned):
+            continue
+
+        path = Path(cleaned)
+        ext = path.suffix.lstrip(".").lower()
+        if allowed_exts and ext not in allowed_exts:
+            continue
+
+        abs_resolved = path.resolve(strict=False)
+        try:
+            rel = abs_resolved.relative_to(src_root_resolved)
+        except ValueError:
+            print(f"[SKIP] 清单路径不在源根目录下：{path}")
+            continue
+
+        files.append(Path(rel))
+
+    return files
+
 
 def copy_files(rel_paths, src_root: Path, dst_root: Path, dry_run=False):
     copied, missing, skipped = 0, 0, 0
@@ -113,7 +173,7 @@ def main():
     ap = argparse.ArgumentParser(description="从 tree /F 输出清单按原层级拷贝指定类型文件")
     ap.add_argument("source_root", help="源根目录（生成 tree /F 的那个目录）")
     ap.add_argument("target_root", help="目标根目录（拷贝到这里）")
-    ap.add_argument("list_file", help="tree /F 的文本输出文件")
+    ap.add_argument("list_file", help="清单文件（tree /F 文本或绝对路径列表）")
     ap.add_argument(
         "--ext",
         action="append",
@@ -136,8 +196,16 @@ def main():
     if not lst.exists():
         raise SystemExit(f"清单文件不存在：{lst}")
 
-    file_re = compile_file_regex(set(args.ext))
-    rel_paths = parse_tree_file(lst, file_re)
+    exts = set(args.ext)
+    file_re = compile_file_regex(exts)
+    lines = load_manifest_lines(lst)
+    manifest_format = detect_manifest_format(lines)
+    if manifest_format == "absolute":
+        print("Detected manifest format: absolute paths")
+        rel_paths = parse_absolute_lines(lines, exts, src)
+    else:
+        print("Detected manifest format: tree /F output")
+        rel_paths = parse_tree_lines(lines, file_re)
 
     if not rel_paths:
         print("清单里没有匹配到文件（请检查扩展名/正则是否正确，或确认清单是 tree /F 的输出）")

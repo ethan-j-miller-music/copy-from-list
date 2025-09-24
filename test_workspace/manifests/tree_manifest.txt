@@ -1,0 +1,15 @@
+Folder PATH listing for volume DATA
+Volume serial number is 0000-0000
+C:.
+├── ProjectAlpha
+│   ├── docs
+│   │   ├── design-spec.pdf
+│   │   └── meeting-notes.txt
+│   └── images
+│       └── architecture.png
+└── ProjectBeta
+    └── reports
+        └── financial-report.docx
+
+    4 File(s)              0 bytes
+    3 Dir(s)  123,456,789,012 bytes free

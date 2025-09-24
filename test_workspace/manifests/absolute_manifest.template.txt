@@ -1,0 +1,3 @@
+{repo_root}/test_workspace/source/ProjectAlpha/docs/design-spec.pdf
+{repo_root}/test_workspace/source/ProjectAlpha/images/architecture.png
+{repo_root}/test_workspace/source/ProjectBeta/reports/financial-report.docx
